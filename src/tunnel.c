@@ -178,7 +178,7 @@ int ppp_interface_is_up(struct tunnel *tunnel)
 			if (&(ifa->ifa_addr->sa_family) != NULL
 			    && ifa->ifa_addr->sa_family == AF_INET) {
 				struct in_addr if_ip_addr =
-				        ((struct sockaddr_in *) ifa->ifa_addr)->sin_addr;
+				        cast_addr(ifa->ifa_addr)->sin_addr;
 
 				log_debug("Interface Name: %s\n", ifa->ifa_name);
 				log_debug("Interface Addr: %s\n", inet_ntoa(if_ip_addr));
