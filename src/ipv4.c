@@ -264,11 +264,14 @@ int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 	gtw_rt->rt_flags |= RTF_HOST;
 	gtw_rt->rt_metric = 0;
 
+	tunnel->ipv4.route_to_vpn_is_added = 1;
 	log_debug("Setting route to vpn server...\n");
 	ret = ipv4_set_route(gtw_rt);
-	if (ret == ERR_IPV4_SEE_ERRNO && errno == EEXIST)
+	if (ret == ERR_IPV4_SEE_ERRNO && errno == EEXIST) {
 		log_warn("Route to vpn server exists already.\n");
-	else if (ret != 0)
+
+		tunnel->ipv4.route_to_vpn_is_added = 0;
+	} else if (ret != 0)
 		log_warn("Could not set route to vpn server (%s).\n",
 		         err_ipv4_str(ret));
 
@@ -390,10 +393,14 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 	struct rtentry *gtw_rt = &tunnel->ipv4.gtw_rt;
 	struct rtentry *ppp_rt = &tunnel->ipv4.ppp_rt;
 
-	ret = ipv4_del_route(gtw_rt);
-	if (ret != 0)
-		log_warn("Could not delete route to vpn server (%s).\n",
-		         err_ipv4_str(ret));
+	if (tunnel->ipv4.route_to_vpn_is_added) {
+		ret = ipv4_del_route(gtw_rt);
+		if (ret != 0)
+			log_warn("Could not delete route to vpn server (%s).\n",
+			         err_ipv4_str(ret));
+	} else {
+		log_debug("Route to vpn server is not added\n");
+	}
 
 	if (tunnel->ipv4.split_routes)
 		goto out;
