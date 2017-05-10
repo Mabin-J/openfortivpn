@@ -72,7 +72,10 @@ static inline int route_init(struct rtentry *route)
 
 static inline int route_destroy(struct rtentry *route)
 {
-	free(route_iface(route));
+	if (route_iface(route) != NULL) {
+		free(route_iface(route));
+		route_iface(route) = NULL;
+	}
 	return 0;
 }
 
@@ -244,6 +247,7 @@ int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 	int ret;
 
 	route_init(def_rt);
+	route_init(gtw_rt);
 
 	// Back up default route
 	route_dest(def_rt).s_addr = inet_addr("0.0.0.0");
@@ -253,12 +257,17 @@ int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 	if (ret != 0) {
 		log_warn("Could not get current default route (%s).\n",
 		         err_ipv4_str(ret));
+		log_warn("Protecting tunnel route has failed. "
+		         "But this can be working except for some cases.\n");
 		goto err_destroy;
 	}
 
 
 	// Set the default route as the route to the tunnel gateway
+	char* iface = route_iface(gtw_rt);
 	memcpy(gtw_rt, def_rt, sizeof(*gtw_rt));
+	route_iface(gtw_rt) = iface;
+	strncpy(route_iface(gtw_rt), route_iface(def_rt), ROUTE_IFACE_LEN - 1);
 	route_dest(gtw_rt).s_addr = tunnel->config->gateway_ip.s_addr;
 	route_mask(gtw_rt).s_addr = inet_addr("255.255.255.255");
 	gtw_rt->rt_flags |= RTF_HOST;
@@ -280,9 +289,6 @@ int ipv4_protect_tunnel_route(struct tunnel *tunnel)
 err_destroy:
 	route_destroy(def_rt);
 	tunnel->ipv4.route_to_vpn_is_added = 0;
-	log_warn("Protecting tunnel route has faild. \
-But this can be working except for some cases.\n");
-
 	return ret;
 }
 
@@ -382,6 +388,7 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 	int ret = ipv4_protect_tunnel_route(tunnel);
 
 	if (tunnel->ipv4.split_routes)
+		// try even if ipv4_protect_tunnel_route has failed
 		return ipv4_set_split_routes (tunnel);
 	else if (ret == 0) {
 		return ipv4_set_default_routes (tunnel);
@@ -403,29 +410,28 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 			log_warn("Could not delete route to vpn server (%s).\n",
 			         err_ipv4_str(ret));
 
-		if (tunnel->ipv4.split_routes)
-			goto out;
+		if (tunnel->ipv4.split_routes==0) {
+			ret = ipv4_del_route(ppp_rt);
+			if (ret != 0)
+				log_warn("Could not delete route through tunnel (%s).\n",
+				         err_ipv4_str(ret));
 
-		ret = ipv4_del_route(ppp_rt);
-		if (ret != 0)
-			log_warn("Could not delete route through tunnel (%s).\n",
-			         err_ipv4_str(ret));
+			// Restore the default route. It seems not to be
+			// automatically restored on all linux distributions
+			ret = ipv4_set_route(def_rt);
+			if (ret != 0) {
+				log_warn("Could not restore default route (%s). "
+				         "Already restored?\n",
+				         err_ipv4_str(ret));
+			}
 
-		// Restore the default route
-		// It seems to not be automatically restored on all linux distributions
-		ret = ipv4_set_route(def_rt);
-		if (ret != 0) {
-			log_warn("Could not restore default route (%s). \
-Already restored?\n",
-			         err_ipv4_str(ret));
 		}
-
-		route_destroy(ppp_rt);
-out:
-		route_destroy(def_rt);
 	} else {
 		log_debug("Route to vpn server was not added\n");
 	}
+	route_destroy(ppp_rt);
+	route_destroy(def_rt);
+	route_destroy(gtw_rt);
 
 	return 0;
 }
@@ -435,7 +441,7 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	int ret = -1;
 	FILE *file;
 	struct stat stat;
-	char ns1[27], ns2[27]; // 11 + 15 + 1
+	char ns1[28], ns2[28]; // 11 + 15 + 1 + 1
 	char *buffer, *line;
 
 	tunnel->ipv4.ns_are_new = 1;
