@@ -229,6 +229,18 @@ static int ipv4_get_route(struct rtentry *route)
 	}
 	start++;
 
+#ifdef __APPLE__
+	// Skip 3 more line
+	start = index(start, '\n');
+	start = index(++start, '\n');
+	start = index(++start, '\n');
+	if (start == NULL) {
+		log_debug("routing table is malformed.\n");
+		return ERR_IPV4_PROC_NET_ROUTE;
+	}
+	
+#endif
+
 	// Look for the route
 	line = strtok_r(start, "\n", &saveptr1);
 	while (line != NULL) {
@@ -252,34 +264,87 @@ static int ipv4_get_route(struct rtentry *route)
 		window = strtol(strtok_r(NULL, "\t", &saveptr2), NULL, 16);
 		irtt = strtol(strtok_r(NULL, "\t", &saveptr2), NULL, 16);
 #else
+		char tmp_ip_string[16];
 		struct in_addr dstaddr;
 		int pos;
 		char *tmpstr;
+
+		log_debug("line: %s\n", line);
+
 		saveptr3=NULL;
 		// "Destination"
-		tmpstr = strtok_r(line, " \t", &saveptr2);
+		tmpstr = strtok_r(line, " ", &saveptr2);
+		log_debug("- Destination: %s\n", tmpstr);
 		// replace literal "default" route by IPV4 numbers-and-dots notation
-		if (strncmp(tmpstr,"default",7)==0) tmpstr="0.0.0.0";
-		dest = -1;
-		// break CIDR up into address and mask part
-		if (inet_aton(strtok_r(tmpstr, "/", &saveptr3), &dstaddr))
-			dest=dstaddr.s_addr;
-		mask = 0;
-		mask = strtol(strtok_r(NULL, " \t", &saveptr3), NULL, 10);
-		mask = 0xffffffff << (32-mask); // convert from CIDR to ipv4 mask
+		if (strncmp(tmpstr, "default", 7) == 0) {
+			dest = 0;
+			mask = 0;
+		} else {
+			int is_mask_set = 0;
+			char* tmp_position;
+			int dot_count = -1;
+
+			if(index(tmpstr, '/') != NULL){
+				// 123.123.123.123/30 style
+				// 123.123.123/24 style
+				// 123.123/24 style
+				
+				// break CIDR up into address and mask part
+				strcpy(tmp_ip_string, strtok_r(tmpstr, "/", &saveptr3));
+				mask = 0;
+				mask = strtol(saveptr3, NULL, 10);
+				mask = 0xffffffff << (32-mask); // convert from CIDR to ipv4 mask
+
+				is_mask_set = 1;
+			} else if (inet_aton(tmpstr, &dstaddr)) {
+				// 123.123.123.123 style
+				// 123.123.123 style
+				// 123.123 style
+
+				strcpy(tmp_ip_string, tmpstr);
+				is_mask_set = 0;
+			}
+
+			{	// Process Destination IP Expression
+				tmp_position = tmp_ip_string;
+				while(tmp_position != NULL) {
+					++dot_count;
+					tmp_position = index(++tmp_position, '.');
+				}
+
+				for (int i = dot_count; i < 3; i++){
+					strcat(tmp_ip_string, ".0");
+				}
+
+				if (inet_aton(tmp_ip_string, &dstaddr)) {
+					dest = dstaddr.s_addr;
+				}
+
+				if(!is_mask_set) {
+					mask = 0xffffffff << (32-((dot_count + 1) * 8)); // convert from CIDR to ipv4 mask
+				}
+			}
+
+		}
+		log_debug("- Destionation IP Hex: %x\n", dest);
+		log_debug("- Destionation Mask Hex: %x\n", mask);
 		// "Gateway"
 		gtw = 0;
-		if (inet_aton(strtok_r(NULL, " \t", &saveptr2), &dstaddr))
+		if (inet_aton(strtok_r(NULL, " ", &saveptr2), &dstaddr)) {
 			gtw=dstaddr.s_addr;
+			log_debug("- Gateway Mask Hex: %x\n", gtw);
+		}
 		// "Flags"
-		tmpstr = strtok_r(NULL, " \t", &saveptr2);
+		tmpstr = strtok_r(NULL, " ", &saveptr2);
 		flags = 0;
 		// this is the reason for the 256 entries mentioned above
 		for (pos=0; pos<strlen(tmpstr); pos++)
 			flags |= flag_table[(unsigned char)tmpstr[pos]];
-		strtok_r(NULL, " \t", &saveptr2); // "Refs"
-		strtok_r(NULL, " \t", &saveptr2); // "Use"
-		iface = strtok_r(line, " \t", &saveptr2); // "Netif"
+		strtok_r(NULL, " ", &saveptr2); // "Refs"
+		strtok_r(NULL, " ", &saveptr2); // "Use"
+		iface = strtok_r(NULL, " ", &saveptr2); // "Netif"
+		log_debug("- Interface: %s\n", iface);
+		log_debug("\n");
 #endif
 
 		if (dest == route_dest(route).s_addr &&
